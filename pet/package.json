@@ -1,0 +1,9 @@
+{
+  "name": "dsh-chat-widget-pet",
+  "version": "1.0.0",
+  "private": true,
+  "description": "dsh-chat-widget 的桌宠窗口（纯 JS Electron 外壳，只做窗口：透明/置顶/穿透/拖动）",
+  "main": "main.js",
+  "comment": "不需要 npm install：宿主会借 DSH 自带的 Electron 运行时（见 host/pet.js 的 resolveRuntime）。",
+  "dependencies": {}
+}

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>桌宠</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;   /* 透明窗：这里绝不能有底色 */
+    overflow: hidden;
+    font-family: var(--pet-font, "Microsoft YaHei UI", "Segoe UI", sans-serif);
+    user-select: none;
+    cursor: default;
+  }
+  /* 绿幕（调整模式）：一眼和桌面区分开 */
+  body.edit {
+    background: #00b140;
+    cursor: crosshair;
+  }
+  #stage { position: absolute; inset: 0; }
+  canvas { display: block; }
+
+  /* 气泡 */
+  #bubble {
+    position: absolute;
+    left: 50%;
+    top: 8px;
+    transform: translateX(-50%);
+    max-width: calc(100% - 16px);
+    box-sizing: border-box;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: rgba(20, 22, 28, 0.88);
+    color: #fff;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: center;
+    opacity: 0;
+    transition: opacity 160ms ease;
+    pointer-events: none;
+    word-break: break-word;
+  }
+  #bubble.show { opacity: 1; }
+  /* 气泡位置：置顶 / 置底（由 body 上的 class 决定） */
+  body.bubbleBottom #bubble { top: auto; bottom: 8px; }
+  /* ── 绿幕里的气泡定位框：只有调整模式才显示 ── */
+  #bubbleGuide {
+    display: none;
+    position: absolute;
+    left: 8px; right: 8px;
+    pointer-events: none;
+  }
+  body.edit #bubbleGuide { display: block; }
+  body.edit.bubbleBottom #bubbleGuide { bottom: 8px; }
+  body.edit.bubbleTop #bubbleGuide { top: 8px; }
+  #bubbleGuide .bg-outer {
+    box-sizing: border-box;
+    border: 2px dashed rgba(255, 255, 255, 0.85);
+    border-radius: 10px;
+    /* 5 行：行高 18px × 5 + 上下内边距 */
+    height: calc(18px * 5 + 12px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #bubbleGuide .bg-inner {
+    box-sizing: border-box;
+    border: 2px solid rgba(255, 255, 255, 0.95);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.35);
+    color: #fff;
+    font-size: 12px;
+    line-height: 18px;
+    /* 3 行 */
+    height: calc(18px * 3 + 8px);
+    width: 86%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 调整模式：顶部说明条 + 8 个手柄 + 右下握把 */
+  #hint {
+    display: none;
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    padding: 4px 8px;
+    background: rgba(0, 0, 0, 0.45);
+    color: #fff;
+    font-size: 11px;
+    text-align: center;
+    pointer-events: none;
+  }
+  body.edit #hint { display: block; }
+  .handle {
+    display: none;
+    position: absolute;
+    background: rgba(255, 255, 255, 0.28);
+  }
+  body.edit .handle { display: block; }
+  .handle:hover { background: rgba(255, 255, 255, 0.55); }
+  /* 8 个边缘/角：命中区 7px，角 17px */
+  .h-n  { left: 17px; right: 17px; top: 0;    height: 7px;  cursor: ns-resize; }
+  .h-s  { left: 17px; right: 17px; bottom: 0; height: 7px;  cursor: ns-resize; }
+  .h-w  { top: 17px; bottom: 17px; left: 0;   width: 7px;   cursor: ew-resize; }
+  .h-e  { top: 17px; bottom: 17px; right: 0;  width: 7px;   cursor: ew-resize; }
+  .h-nw { left: 0; top: 0;    width: 17px; height: 17px; cursor: nwse-resize; }
+  .h-ne { right: 0; top: 0;   width: 17px; height: 17px; cursor: nesw-resize; }
+  .h-sw { left: 0; bottom: 0; width: 17px; height: 17px; cursor: nesw-resize; }
+  .h-se { right: 0; bottom: 0; width: 17px; height: 17px; cursor: nwse-resize; }
+  #grip {
+    display: none;
+    position: absolute;
+    right: 2px; bottom: 2px;
+    width: 18px; height: 18px;
+    border-right: 3px solid rgba(255, 255, 255, 0.75);
+    border-bottom: 3px solid rgba(255, 255, 255, 0.75);
+    cursor: nwse-resize;
+  }
+  body.edit #grip { display: block; }
+
+  /* 加载失败时给个人话（别让用户对着透明窗口发呆） */
+  #error {
+    display: none;
+    position: absolute;
+    inset: 0;
+    padding: 16px;
+    box-sizing: border-box;
+    background: rgba(20, 22, 28, 0.92);
+    color: #ffb4b4;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow: auto;
+  }
+  body.failed #error { display: block; }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="bubble"></div>
+  <!-- 绿幕里的**气泡定位框**：外框 5 行高（气泡最多能占的区域），里面 3 行的小框是气泡本身 -->
+  <div id="bubbleGuide" aria-hidden="true">
+    <div class="bg-outer">
+      <div class="bg-inner">（气泡字幕）</div>
+    </div>
+  </div>
+  <div id="hint">调整模式：拖边缘改窗口大小 · 拖绿幕搬窗口</div>
+  <div class="handle h-n"></div><div class="handle h-s"></div>
+  <div class="handle h-w"></div><div class="handle h-e"></div>
+  <div class="handle h-nw"></div><div class="handle h-ne"></div>
+  <div class="handle h-sw"></div><div class="handle h-se"></div>
+  <div id="grip"></div>
+  <div id="error"></div>
+
+  <!-- 顺序不能变：Cubism Core → pixi → pixi-live2d-display（cubism4 版） -->
+  <script src="assets/vendor/live2dcubismcore.min.js"></script>
+  <script src="assets/vendor/pixi.min.js"></script>
+  <script src="assets/vendor/pixi-live2d-display-cubism4.min.js"></script>
+  <script src="pet.js"></script>
+</body>
+</html>

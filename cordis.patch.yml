@@ -1,0 +1,8 @@
+# 侧边栏常驻聊天栏（chat-widget bundle 的 patch 层）
+#
+# 一行：把 bundle 的主插件挂上去。
+# 客户端半边（client.js）注册进 sidebar.footer.action 槽，
+# 宿主半边（index.js）目前是空实现。
+- insert:
+    - id: chat-widget
+      name: '@local/chat-widget'

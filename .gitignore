@@ -1,0 +1,23 @@
+# Live2D 素材（模型、Cubism Core、渲染库）都不进仓库：
+#   - 桃濑日和等官方示例模型有版权，禁止再发布；
+#   - live2dcubismcore 是 Live2D 专有软件，只能在获得许可的前提下随应用分发。
+# 自己用时把模型放到 pet/assets/live2d/<名字>/，渲染库放到 pet/assets/vendor/。
+pet/assets/
+
+# 借来的 Electron 运行时（从 DSH 桌面端硬链接，300+ MB），每台机器自行重建。
+.pet-runtime/
+
+# 运行期产物
+pet/pet.log
+pet/pet-state.json
+*.log
+
+# 构建/依赖
+node_modules/
+
+# 系统/编辑器
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
