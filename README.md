@@ -9,6 +9,12 @@ DSH（DeepSeek Harness）侧边栏底部的常驻聊天栏：能聊天、会看�
   <img src="docs/screenshot-app.png" alt="DSH 侧边栏里的聊天栏" width="900">
 </p>
 
+<p align="center">
+  <img src="docs/character.png" alt="桌宠角色：朝那玲" width="260">
+  <br>
+  <sub>桌宠角色「朝那玲」——模型与立绘随仓库提供，授权见 <a href="ASSETS.md">ASSETS.md</a>（保留所有权利，不可再分发 / 商用）</sub>
+</p>
+
 ## 功能
 
 ### 聊天
@@ -53,17 +59,20 @@ dsh plugin --profile web add "<本目录的绝对路径>"
 - .NET Framework 的 `csc.exe`（系统自带）；想要字幕 OCR 还需要 **Windows SDK** 的 `Windows.winmd`，缺了会自动退化成「无 OCR 的截图引擎」
 - Node 侧依赖 `sherpa-onnx-node`（ASR 与本地 TTS），需在 DSH 安装目录中可解析
 
-## 桌宠：素材要自备
+## 桌宠
 
-仓库里**不含任何 Live2D 素材**，原因见 `.gitignore`：
+仓库里**自带一个角色：朝那玲**（`pet/assets/live2d/朝那玲/`），渲染库 `pixi.js` 与
+`pixi-live2d-display` 也一起提供了。还缺的只有两样：
 
-| 需要什么 | 放哪 |
+| 需要什么 | 怎么来 |
 | --- | --- |
-| 模型（`.model3.json` 等） | `pet/assets/live2d/<名字>/` |
-| 渲染库（pixi.js、pixi-live2d-display、live2dcubismcore） | `pet/assets/vendor/` |
+| `live2dcubismcore.min.js` | 第一次开启桌宠时插件会提示，点一下从 Live2D 官方地址下载（专有软件，不能随仓库分发） |
 | Electron 运行时 | 首次开启桌宠时从 DSH 桌面端自动准备 |
 
-`live2dcubismcore` 是 Live2D 的专有软件，官方示例模型也有版权，**都不适合随仓库分发**，所以这里留空。
+想换自己的模型：把 `*.model3.json` 那套放进 `pet/assets/live2d/<名字>/`，重启后在设置里选。
+
+> 「桃濑日和」是 Live2D 的官方示例模型，有版权、禁止再发布，所以仓库里没有，也不要往里放。
+> 细节见 [pet/assets/README.md](pet/assets/README.md)。
 
 ## 隐私
 
@@ -77,9 +86,15 @@ dsh plugin --profile web add "<本目录的绝对路径>"
 
 - 仅 Windows
 - 没有 Windows SDK 时 OCR 不可用（截图和视觉理解仍可用）
-- 桌宠需要自备 Live2D 模型与渲染库
 - OCR / ASR 的识别结果只作参考，不保证准确
 
 ## 许可
 
-[MIT](LICENSE)。仓库不包含 Live2D Inc. 的任何素材。
+分两部分，别混：
+
+| 内容 | 许可 |
+| --- | --- |
+| 代码（`index.js`、`client.js`、`host/`、`native/`、`pet/*.js` …） | [MIT](LICENSE) |
+| 角色「朝那玲」的模型与立绘（`pet/assets/live2d/朝那玲/`、`docs/character.png`） | **保留所有权利**，不可再分发、不可商用，详见 [ASSETS.md](ASSETS.md) |
+
+仓库不包含 Live2D Inc. 的任何素材（桃濑日和、Cubism Core 均不在内）。

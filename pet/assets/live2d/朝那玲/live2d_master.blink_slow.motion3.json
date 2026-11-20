@@ -1,0 +1,84 @@
+{
+	"Version": 3,
+	"Meta": {
+		"Duration": 0.9,
+		"Fps": 30.0,
+		"Loop": false,
+		"AreBeziersRestricted": true,
+		"FadeInTime": 0.25,
+		"FadeOutTime": 0.25,
+		"CurveCount": 3,
+		"TotalSegmentCount": 6,
+		"TotalPointCount": 21,
+		"UserDataCount": 0,
+		"TotalUserDataSize": 0
+	},
+	"Curves": [
+		{
+			"Target": "Parameter",
+			"Id": "ParamEyeLOpen",
+			"Segments": [
+				0,
+				1,
+				1,
+				0.13999999999999999,
+				1,
+				0.27999999999999997,
+				0.04,
+				0.42,
+				0.04,
+				1,
+				0.58,
+				0.17600000000000002,
+				0.74,
+				1,
+				0.9,
+				1
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Id": "ParamEyeROpen",
+			"Segments": [
+				0,
+				1,
+				1,
+				0.13999999999999999,
+				1,
+				0.27999999999999997,
+				0.04,
+				0.42,
+				0.04,
+				1,
+				0.58,
+				0.17600000000000002,
+				0.74,
+				1,
+				0.9,
+				1
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Id": "ParamEyeBallY",
+			"Segments": [
+				0,
+				0,
+				1,
+				0.13333333333333333,
+				0,
+				0.26666666666666666,
+				-0.08,
+				0.4,
+				-0.08,
+				1,
+				0.5666666666666667,
+				-0.08,
+				0.7333333333333334,
+				0,
+				0.9,
+				0
+			]
+		}
+	]
+}
