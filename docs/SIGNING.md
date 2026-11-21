@@ -21,21 +21,80 @@
 
 ## 申请时要填/说明的
 
-1. 项目名：`dsh-chat-widget`
-2. 仓库：`https://github.com/nodcharlotte/dsh-chat-widget`
-3. 许可证：MIT
-4. **要签什么**：四个 windows-x64 的 .NET Framework 控制台程序
-   （`dshcw-capture.exe`、`dshcw-capture-ocr.exe`、`dshcw-audio.exe`、`dshcw-watch.exe`），
-   每个 6–20 KB，无第三方二进制依赖。
-5. **它们做什么**：截屏 / WinRT OCR / WASAPI loopback 录音 / `SetWinEventHook` 前台窗口监测。
-   不联网、不写注册表、不提权。
-6. **怎么分发**：作为 DSH 插件的一部分，用户在自己机器上运行；本插件在
-   Smart App Control 开启的机器上会从本仓库的 Release 下载这几个**已签名**的文件，
-   并按 `native-manifest.json` 里的 sha256 校验。
-7. **怎么构建**：`node native/build.mjs`，由 `.github/workflows/build-native.yml` 在
-   `windows-latest` 上执行；签名请求是该工作流里的 `SignPath/github-action-submit-signing-request` 步骤。
-8. 说明角色素材（`pet/assets/live2d/朝那玲/`）有独立许可、**不参与签名产物**，
-   避免审核把"保留所有权利"的美术素材当成"专有代码"。
+表单是英文的（[signpath.org/apply](https://signpath.org/apply)），下面是逐栏可直接粘贴的英文答案。
+
+| 字段 | 填什么 |
+| --- | --- |
+| Project Name* | `dsh-chat-widget` |
+| Repository URL* | `https://github.com/nodcharlotte/dsh-chat-widget` |
+| Homepage URL* | `https://github.com/nodcharlotte/dsh-chat-widget` |
+| Download URL | `https://github.com/nodcharlotte/dsh-chat-widget/releases/latest` |
+| Privacy Policy URL | `https://github.com/nodcharlotte/dsh-chat-widget/blob/main/docs/PRIVACY.md` |
+| Wikipedia URL | 留空 |
+| Tagline* | `Side-panel chat companion for DeepSeek Harness that can watch your screen and live on your desktop as a Live2D pet.` |
+| Category* | 下拉框里最贴近的是 **Developer Tools**（没有就选 Desktop / Other） |
+| Build System* | `GitHub Actions` |
+| Maintainer Type | **Individual**（除非用公司名义） |
+| Company Name | 留空 |
+
+Description*：
+
+```text
+dsh-chat-widget is a plugin for DeepSeek Harness (DSH), a desktop AI harness. It adds a
+persistent chat panel to the DSH sidebar, keeps a local SQLite memory of past conversations,
+and can optionally observe the foreground window, read burned-in subtitles from screen
+captures through the Windows OCR API, transcribe speaker audio, and render an animated Live2D
+character in a transparent always-on-top window. Four small C# engines perform capture, OCR,
+audio loopback and window tracking; they are compiled locally from source, or downloaded as
+signed binaries where Windows Smart App Control would otherwise block unsigned code.
+Everything runs on the user's machine; network access is limited to the model endpoints the
+user configures.
+```
+
+Reputation*（这个字段最弱 —— 仓库是新的，零 star、零下载，只能说实话）：
+
+```text
+dsh-chat-widget is a young project: the repository was created in November 2026 and the first
+release (v0.3.0) was published immediately before this application, so there is no media
+coverage or download history yet. What can be verified today: all source code, build
+instructions and the signing setup are public in the repository (docs/NATIVE.md,
+docs/SIGNING.md); the binaries are produced only by the repository's own GitHub Actions
+workflow on GitHub-hosted runners, never on a developer machine; the plugin targets DeepSeek
+Harness and follows that project's published plugin interface. We are applying before the
+first public release so that what users download is signed from the start rather than
+retrofitted later.
+```
+
+Primary Discovery Channel*（如实选）：下拉里若有 AI assistant / ChatGPT 之类就选它，exact source 填：
+
+```text
+Suggested by an AI coding assistant while researching how to distribute unsigned Windows
+binaries on machines with Smart App Control enabled.
+```
+
+两个勾选框（Code of Conduct、个人数据处理）自己读一遍再勾。
+证书是发给 **SignPath Foundation** 的，个人姓名不会出现在签名里，只会显示
+`SignPath Foundation` 这个发布者。
+
+### 还有自由文本框（或回邮件）的话，附上这段
+
+```text
+What would be signed: four Windows x64 .NET Framework console executables
+(dshcw-capture.exe, dshcw-capture-ocr.exe, dshcw-audio.exe, dshcw-watch.exe), 6-20 KB each,
+with no third-party binary dependencies. They capture the screen and compose contact sheets,
+run Windows.Media.Ocr, record the speaker through WASAPI loopback, and track the foreground
+window through SetWinEventHook. They do not access the network, do not write to the registry
+and never request elevation.
+
+Build: `node native/build.mjs` executed by .github/workflows/build-native.yml on a
+GitHub-hosted windows-latest runner; the signing request is a
+`signpath/github-action-submit-signing-request` step inside that same workflow. The compile
+args are shared with the plugin's own local build path, so CI and local builds cannot drift.
+
+Licensing: all code, including the C# sources of the signed binaries, is MIT. The bundled
+Live2D character model and artwork have their own license (see ASSETS.md) and are NOT part of
+the signed executables.
+```
 
 ## 批准之后要做的（一次性）
 
