@@ -1,6 +1,6 @@
 {
   "name": "@local/chat-widget",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MIT",
   "type": "module",
   "description": "DSH 侧边栏底部的常驻聊天栏：聊天、屏幕陪看、窗口监测、Live2D 桌宠",
