@@ -307,6 +307,7 @@ export function prebuiltEngine(exeName) {
  * 从 GitHub Release 把预编译产物拉下来，写到数据目录（先 `.tmp` 再改名）。
  *
  * 清单里的 sha256 对不上就不落盘 —— 宁可用本机编的，也不装一个来源不明的二进制。
+ * 清单里的 `signed` 不是 `true` 时，SAC 开着的机器直接拒收（见下面的注释）。
  *
  * @param {object} [logger] - 日志器。
  * @returns {Promise<{ok: boolean, files?: Record<string, string>, version?: string, error?: string}>} 结果。
@@ -333,6 +334,12 @@ export async function fetchPrebuilt(logger) {
   }
   const listed = manifest !== null && typeof manifest === 'object' ? manifest.files : null;
   if (listed === null || typeof listed !== 'object') return { ok: false, error: '清单里没有 files' };
+  // 清单里 `signed` 是 CI 打的标记：这批产物过没过 SignPath。
+  // SAC 开着时**未签名的一律不收** —— 那些文件在用户机器上根本跑不起来，
+  // 收下来只会让"能下载到"变成"下载到了但一启动就被拦"，比直接退回本机编译还糟。
+  if (sacState().state === 'on' && manifest.signed !== true) {
+    return { ok: false, error: 'Release 里是未签名的产物（本机开着 SAC，下载了也跑不起来）' };
+  }
 
   const written = {};
   for (const name of RELEASE_FILES) {

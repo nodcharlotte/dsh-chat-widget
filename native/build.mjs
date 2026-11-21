@@ -79,5 +79,7 @@ for (const item of TARGETS) {
 
 const version = typeof process.argv[2] === 'string' ? process.argv[2] : '';
 const manifest = join(nativeDir(), 'native-manifest.json');
-writeFileSync(manifest, `${JSON.stringify({ version, files }, null, 2)}\n`, 'utf8');
+// `signed: false` —— 这里是编完的原始产物；真正随 Release 发布的那份清单由
+// `.github/workflows/build-native.yml` 的「整理发布产物」步骤在签名之后重写。
+writeFileSync(manifest, `${JSON.stringify({ version, signed: false, files }, null, 2)}\n`, 'utf8');
 logger.info(`清单已写好：${manifest}`);

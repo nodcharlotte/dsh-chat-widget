@@ -49,6 +49,7 @@ native-manifest.json
 ```json
 {
   "version": "v0.3.0",
+  "signed": true,
   "files": {
     "dshcw-capture.exe": "<sha256>",
     "...": "..."
@@ -57,6 +58,9 @@ native-manifest.json
 ```
 
 插件只认清单里列了、且哈希对得上的文件；对不上就不落盘，退回本机编译。
+`signed` 是 CI 打的标记，告诉插件这批产物过没过 SignPath ——
+**SAC 开着的机器直接拒收 `signed: false` 的清单**，因为未签名的文件下载下来也跑不起来，
+不如当场退回本机编译、把「关掉 SAC」的提示显示出来。
 
 ## 怎么编出来的
 
