@@ -1,0 +1,121 @@
+name: build-native
+
+# 四个原生引擎（native/*.cs）编成 EXE，打标签时再交给 SignPath 签名并发布。
+#
+# 为什么要在 CI 里编：SignPath Foundation 只给"由项目自己的 CI 从自己的源码编出来"的产物签名。
+# 插件在 Smart App Control 开着的机器上会从本仓库 Release 下载这些**已签名**的产物
+# （下载后逐个核对 native-manifest.json 里的 sha256）。详见 docs/NATIVE.md。
+#
+# 需要的仓库配置（SignPath 通过之后再加）：
+#   variable SIGNPATH_SIGNING_ENABLED = true      # 开关；没有它也能跑，只是不签名、不发版
+#   secret   SIGNPATH_API_TOKEN                   # SignPath 里生成的 API token
+#   secret   SIGNPATH_ORGANIZATION_ID             # SignPath 组织 ID（不是 slug）
+# 以及 SignPath 侧的项目 project-slug / 签名策略 signing-policy-slug（见下方 with:）。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # 产物落到工作目录下，不碰 runner 的 ~/.dsh；
+      # host/native-build.js 的 nativeDir() 会跟着这个变量走。
+      DSH_HOME: ${{ github.workspace }}\.native
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v7
+
+      - name: 装 Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+
+      # 和插件在用户机器上编译走的是同一份代码（host/native-build.js 的 compileEngine）：
+      # 缺 csc.exe 或缺 WinRT 契约都会直接失败，不会悄悄少编一个引擎。
+      - name: 编译四个引擎 + 写校验清单
+        run: node native/build.mjs "${{ github.ref_name }}"
+
+      - name: 上传未签名产物
+        id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-unsigned
+          path: ${{ env.DSH_HOME }}/chat-widget/native/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 提交签名请求（SignPath）
+        id: sign
+        if: startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_SIGNING_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: dsh-chat-widget
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          # 等 SignPath 签完再往下走；策略里要求人工批准的，这一步会一直等到批准或超时
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: signed
+
+      - name: 整理发布产物（按最终文件重算清单）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:DSH_HOME 'chat-widget/native'
+          $isSigned = $false
+          if (Test-Path 'signed') {
+            $count = (Get-ChildItem 'signed' -Recurse -Filter *.exe).Count
+            if ($count -gt 0) {
+              $src = 'signed'
+              $isSigned = $true
+              Write-Host "用签名后的产物（$count 个）"
+            } else {
+              Write-Host '::warning::SignPath 目录里没有 exe，退回未签名产物'
+            }
+          } else {
+            Write-Host '::warning::没有签名产物，这次的 Release 里是未签名的 EXE'
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Get-ChildItem $src -Recurse -Filter *.exe | ForEach-Object { Copy-Item $_.FullName dist -Force }
+          $files = [ordered]@{}
+          Get-ChildItem dist -Filter *.exe | Sort-Object Name | ForEach-Object {
+            $files[$_.Name] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          # `signed` 是给插件看的：SAC 开着的机器只收 signed=true 的清单，
+          # 未签名的一律拒收（下载了也跑不起来，不如直接退回本机编译并提示关 SAC）。
+          @{ version = "$env:GITHUB_REF_NAME"; signed = $isSigned; files = $files } |
+            ConvertTo-Json -Depth 4 | Set-Content dist/native-manifest.json -Encoding utf8
+          Get-ChildItem dist | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @(Get-ChildItem dist -File | ForEach-Object { $_.FullName })
+          gh release view $tag --json tagName | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+          } else {
+            $notes = @'
+          原生引擎产物（`dshcw-capture.exe` / `dshcw-capture-ocr.exe` / `dshcw-audio.exe` / `dshcw-watch.exe`），
+          附 `native-manifest.json` 校验清单（每个文件的 sha256）。
+
+          插件在 Smart App Control 开着的机器上会自动下载这几个文件并核对哈希。
+          源码与构建方式见 docs/NATIVE.md。
+          '@
+            gh release create $tag @assets --title $tag --notes $notes --verify-tag
+          }
