@@ -42,6 +42,9 @@ window.__ModuleLoader__.load({
     /** 宿主设置接口前缀。 */
     const API = '/chat-widget/api';
 
+    /** Live2D Core 正在下载（防连点）。纯流程控制，不需要触发重绘，所以不用 React state。 */
+    let coreDownloading = false;
+
     /**
      * 内置默认设置。
      *
@@ -393,6 +396,9 @@ window.__ModuleLoader__.load({
       '.dshcw-modelChipOn{border-color:#fff;background:rgba(255,255,255,0.12);font-weight:600}',
       '.dshcw-langWarn{display:flex;align-items:center;gap:10px;margin:4px 0 0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-warning,#e8b339)}',
       '.dshcw-langWarnText{min-width:0}',
+      // SAC 拦住本机编译的引擎时，OCR / ASR / 窗口监测 三处小字下面那行红字 +【SAC设置】
+      '.dshcw-sacWarn{margin:2px 0 0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-danger,#e05c5c)}',
+      '.dshcw-sacLink{padding:0 0 0 4px;border:none;background:transparent;color:var(--dsw-alias-label-danger,#e05c5c);font-family:inherit;font-size:11px;line-height:16px;text-decoration:underline;text-underline-offset:2px;cursor:pointer}',
       '.dshcw-langInstall{flex:none;border:none;height:22px;padding:0 10px;border-radius:6px;background:#fff;color:#111;font-family:inherit;font-size:11px;line-height:22px;cursor:pointer}',
       '.dshcw-langInstall:disabled{opacity:.5;cursor:default}',
       '.dshcw-input,.dshcw-select{box-sizing:border-box;width:100%;height:36px;',
@@ -1315,9 +1321,38 @@ window.__ModuleLoader__.load({
      *
      * @param {{draft: object, setDraft: (next: object) => void, status: object|null}} props - 草稿、改草稿、窗口现场。
      */
-    function SenseSection({ draft, setDraft, onSwitch, onSubtitle, onSpeech, onPet, petStatus, screenStats }) {
+    function SenseSection({ draft, setDraft, onSwitch, onSubtitle, onSpeech, onPet, onDownloadCore, onSacGuide, petStatus, screenStats }) {
       const perceive = draft.perceive !== null && typeof draft.perceive === 'object' ? draft.perceive : {};
       const screen = draft.screen !== null && typeof draft.screen === 'object' ? draft.screen : {};
+      // 智能应用控制拦住了本机编译的引擎（宿主拉签过名的预编译产物又没拉到）：
+      // OCR / ASR / 窗口监测 三处小字**一起**改成"关掉 SAC"的提示（用户 2026-11-21 定的）
+      const sacBlocked = screenStats !== null && typeof screenStats === 'object'
+        && screenStats.native !== null && typeof screenStats.native === 'object'
+        && screenStats.native.sac !== null && typeof screenStats.native.sac === 'object'
+        && screenStats.native.sac.blocked === true;
+      /**
+       * 三处小字后面那段红字 +【SAC设置】。
+       *
+       * @param {string} label - 这一处叫什么（OCR / ASR / 窗口监测）。
+       * @returns {Array|null} 要追加的节点；SAC 没拦住就是 null。
+       */
+      const sacNote = (label) => {
+        if (sacBlocked !== true) return null;
+        return h(
+          'div',
+          { className: 'dshcw-sacWarn', key: `sac-warn-${label}` },
+          `联网拉取${label}编译产物失败，本机有SAC无法使用，如果信任本程序，可临时关闭SAC。`,
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dshcw-sacLink',
+              onClick: () => { if (typeof onSacGuide === 'function') onSacGuide(); },
+            },
+            '[SAC设置]',
+          ),
+        );
+      };
       // 滑块**拨到哪就立刻生效**（这个分区没有保存键）：有 onSwitch 就交给弹窗去存，
       // 没有（自检/孤立渲染）就只改草稿。
       const setSwitch = (key, value) => {
@@ -1487,7 +1522,7 @@ window.__ModuleLoader__.load({
                 )
                 : null,
             ),
-            h('div', { className: 'dshcw-hint' }, '读画面底部的硬字幕，用来抄准人名与台词；不开也能截图识别。'),
+            h('div', { className: 'dshcw-hint' }, '读画面底部的硬字幕，用来抄准人名与台词；不开也能截图识别。', sacNote('OCR')),
           ),
           h(
             'button',
@@ -1553,7 +1588,7 @@ window.__ModuleLoader__.load({
                 )
                 : null,
             ),
-            h('div', { className: 'dshcw-hint' }, hint),
+            h('div', { className: 'dshcw-hint' }, hint, sacNote('ASR')),
           ),
           h(
             'button',
@@ -1585,14 +1620,22 @@ window.__ModuleLoader__.load({
      *
      * TTS 是主开关的从属（缩进 2em，和 OCR / 音轨同一个样式）：桌宠没开时它一并置灰。
      * 引擎不现成（借不到 DSH 的 Electron）时主开关也拨不动，并在提示行里说清原因。
+     *
+     * **Live2D Core 缺了也拨不动**（用户 2026-11-21 定）：那一下不打开开关，
+     * 而是在下面亮一行红字 + 白色【下载】，点了从 Live2D 官方取（约 200 KB）。
+     * Core 是 Live2D 的专有软件，不能随仓库发，所以这一层是必要的。
      */
     const petCard = () => {
       const pet = draft.pet !== null && typeof draft.pet === 'object' ? draft.pet : {};
       const on = pet.enabled === true;
       const runtimeOk = petStatus === null || petStatus.runtimeReady !== false;
+      const core = petStatus !== null && petStatus.core !== null && typeof petStatus.core === 'object' ? petStatus.core : null;
+      const coreMissing = core !== null && core.present !== true;
       const hint = petStatus !== null && petStatus.runtimeReady === false
         ? '找不到可用的窗口运行时。'
-        : '一个站在桌面上的 Live2D 小人，只显示气泡。';
+        : (coreMissing === true
+          ? '还差 Live2D Core（约 200 KB），点下面的【下载】从官方取一份。'
+          : '一个站在桌面上的 Live2D 小人，只显示气泡。');
       return h(
         'div',
         { className: 'dshcw-card', key: 'pet-card' },
@@ -1604,8 +1647,32 @@ window.__ModuleLoader__.load({
         ),
         switchRow('pet', '开启桌宠', hint, runtimeOk !== true, on, (value) => {
           if (typeof onPet !== 'function') return;
+          // 缺 Core 时**不打开开关**：红字和【下载】已经在那儿了，这里只要拒绝
+          if (value === true && coreMissing === true) return;
           onPet('enabled', value);
         }),
+        // 缺 Core：红字 + 白色【下载】。文案里点明"点下载表示同意许可"（EULA 是下载即视为同意）
+        coreMissing === true
+          ? h(
+            'div',
+            { className: 'dshcw-langWarn', key: 'pet-core-warn' },
+            h(
+              'span',
+              { className: 'dshcw-langWarnText' },
+              '缺 Live2D Cubism Core（约 200 KB）。点下载表示同意 Live2D 使用许可；下完自动放好，不用手动搬文件。',
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dshcw-langInstall',
+                title: core !== null && typeof core.license === 'string' ? core.license : '',
+                onClick: () => { if (typeof onDownloadCore === 'function') onDownloadCore(); },
+              },
+              '下载',
+            ),
+          )
+          : null,
         h(
           'div',
           { className: 'dshcw-switchRow dshcw-switchSub', key: 'pet-tts' },
@@ -1648,7 +1715,7 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dshcw-cardName' }, '窗口监测'),
             h('span', { className: 'dshcw-cardTag' }, '前台窗口'),
           ),
-          switchRow('window', '开启窗口监测', '看前台窗口（含浏览器切标签页）。'),
+          switchRow('window', '开启窗口监测', ['看前台窗口（含浏览器切标签页）。', sacNote('窗口监测')]),
         ),
         h(
           'div',
@@ -2686,6 +2753,39 @@ window.__ModuleLoader__.load({
         };
       }, [open]);
 
+      // 智能应用控制开着时，"预编译产物拉到没拉到"要等宿主那边联网拉完才知道（后台拉，不弹窗）。
+      // 打开设置后隔 1.5 秒再问一次，最多问 4 次；拉到了/失败了就停。
+      // SAC 没开时 `sacPending` 一直是 false —— 一次多余请求都不会发。
+      const sacPending = screenStats !== null && typeof screenStats === 'object'
+        && screenStats.native !== null && typeof screenStats.native === 'object'
+        && screenStats.native.sac !== null && typeof screenStats.native.sac === 'object'
+        && screenStats.native.sac.state === 'on'
+        && screenStats.native.sac.fetched === null;
+      React.useEffect(() => {
+        if (!open || sacPending !== true) return undefined;
+        let tries = 0;
+        let cancelled = false;
+        let timer = null;
+        const tick = () => {
+          if (cancelled === true || tries >= 4) return;
+          tries += 1;
+          fetchScreenStats().then((fresh) => {
+            if (cancelled === true || fresh === null || fresh === undefined) return;
+            setScreenStats((current) => (current === null ? fresh : { ...current, native: fresh.native }));
+            const next = fresh.native !== null && typeof fresh.native === 'object' && fresh.native.sac !== null && typeof fresh.native.sac === 'object'
+              ? fresh.native.sac
+              : null;
+            if (next !== null && next.fetched !== null) return;
+            timer = setTimeout(tick, 1500);
+          });
+        };
+        timer = setTimeout(tick, 1500);
+        return () => {
+          cancelled = true;
+          if (timer !== null) clearTimeout(timer);
+        };
+      }, [open, sacPending]);
+
       // 弹窗期间锁 body 滚动；卸载/关闭时恢复
       React.useEffect(() => {
         if (!open) return undefined;
@@ -2873,6 +2973,63 @@ window.__ModuleLoader__.load({
           .catch((error) => {
             setStatusError(true);
             setStatus(`保存桌宠设置失败：${String(error)}`);
+          });
+      };
+
+      /**
+       * 打开「智能应用控制」设置页（SAC 那行红字里的【SAC设置】调它）。
+       *
+       * 浏览器打不开 `windowsdefender:` 这类协议，得由宿主起 `cmd start`。
+       *
+       * @returns {void} 无。
+       */
+      const openSacGuide = () => {
+        fetch(`${API}/screen/sac-guide`, { method: 'POST', headers: { accept: 'application/json' } })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data !== null && typeof data === 'object' && data.ok === true) return;
+            setStatusError(true);
+            setStatus(`打开智能应用控制设置页失败：${String((data !== null && typeof data === 'object' && data.error) || '未知错误')}`);
+          })
+          .catch((error) => {
+            setStatusError(true);
+            setStatus(`打开智能应用控制设置页失败：${String(error)}`);
+          });
+      };
+
+      /**
+       * 下载 Live2D Cubism Core（缺文件时那行红字旁边的【下载】调它）。
+       *
+       * 从 Live2D **官方托管地址**取（约 200 KB），宿主校验内容后直接落到
+       * `pet/assets/vendor/live2dcubismcore.min.js` —— 用户不用自己搬文件。
+       * 用模块级的 `coreDownloading` 防连点：这个不需要重绘，所以不占 useState。
+       *
+       * @returns {void} 无。
+       */
+      const downloadCore = () => {
+        if (coreDownloading === true) return;
+        coreDownloading = true;
+        setStatusError(false);
+        setStatus('正在从 Live2D 官方下载 Core（约 200 KB）…');
+        fetch(`${API}/pet/core`, { method: 'POST', headers: { accept: 'application/json' } })
+          .then((response) => response.json())
+          .then((data) => {
+            coreDownloading = false;
+            if (data !== null && typeof data === 'object' && data.ok === true) {
+              const kb = Math.max(1, Math.round(Number(data.bytes) / 1024));
+              setStatusError(false);
+              setStatus(`Live2D Core 已就位（${kb} KB），现在可以开桌宠了。`);
+              // 现场刷一次：那行红字要自己消失，开关才拨得动
+              fetchPetStatus().then((fresh) => { if (fresh !== null) setPetRuntime(fresh); });
+              return;
+            }
+            setStatusError(true);
+            setStatus(`下载失败：${String((data !== null && typeof data === 'object' && data.error) || '未知错误')}。也可以手动把 live2dcubismcore.min.js 放进 pet/assets/vendor/。`);
+          })
+          .catch((error) => {
+            coreDownloading = false;
+            setStatusError(true);
+            setStatus(`下载失败：${String(error)}`);
           });
       };
 
@@ -3075,7 +3232,7 @@ window.__ModuleLoader__.load({
                   : tab === 'pet'
                     ? h(PetSection, { draft, setDraft, onPet: applyPet, petStatus: petRuntime, previewText, previewBusy, previewHint, setPreviewText, playPreview, editOn, onToggleEdit: toggleEdit, onScale: changeScale, onBubble: changeBubble, petVoices, onInstall: installModel })
                     : tab === 'sense'
-                      ? h(SenseSection, { draft, setDraft, onSwitch: applySense, onSubtitle: applySubtitle, onSpeech: applySpeech, onPet: applyPet, petStatus: petRuntime, status: windowStatus, screenStats, compressing,
+                      ? h(SenseSection, { draft, setDraft, onSwitch: applySense, onSubtitle: applySubtitle, onSpeech: applySpeech, onPet: applyPet, onDownloadCore: downloadCore, onSacGuide: openSacGuide, petStatus: petRuntime, status: windowStatus, screenStats, compressing,
                       onCompress: () => {
                         setCompressing(true);
                         fetch(`${API}/screen/compress`, { method: 'POST' })

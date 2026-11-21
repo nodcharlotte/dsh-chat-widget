@@ -25,7 +25,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -112,12 +113,16 @@ export async function fetchWinmds(logger) {
     const buffer = Buffer.from(await response.arrayBuffer());
     writeFileSync(nupkg, buffer);
 
-    // 解压用 PowerShell 的 Expand-Archive（nupkg 就是 zip；Node 没有内置解压）
+    // 解压用 **Windows 自带的 tar.exe**（bsdtar，认 .zip，Win10 1803+ 都有）。
+    // 以前用 PowerShell 的 Expand-Archive：那会启动一个脚本解释器，在开着
+    // Smart App Control 的机器上直接弹"无法确认谁发布了 PowerShell 7"，
+    // 连带把整个编译链拦掉（用户 2026-11-21 在另一台机器上实测）。
+    // tar.exe 是系统自带、带微软签名的程序，不碰这条路。
     mkdirSync(target, { recursive: true });
-    const result = spawnSync('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-Command', `Expand-Archive -LiteralPath '${nupkg}' -DestinationPath '${target}' -Force`,
-    ], { windowsHide: true, encoding: 'utf8', timeout: 120000 });
+    const tar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+    const result = spawnSync(tar, ['-xf', nupkg, '-C', target], {
+      windowsHide: true, encoding: 'utf8', timeout: 120000,
+    });
     if (result.status !== 0) {
       return { ok: false, error: String(result.stderr ?? '').slice(0, 300) };
     }
@@ -154,6 +159,9 @@ export async function fetchWinmds(logger) {
 export function ocrEngineReady() {
   // 编好的 exe 运行期**不需要** winmd（winmd 只在编译时用），所以这里不查 winmdRefs()。
   // 查了会导致"删了契约包 → 明明有 exe 却判没就绪、点滑块又去重新编译"。
+  //
+  // Release 拉的那份**不看源码 mtime**：发布产物本来就比源码旧，而且它是 SAC 机器上唯一能跑的那个。
+  if (prebuiltEngine('dshcw-capture-ocr.exe') === true) return true;
   try {
     const exe = join(nativeDir(), 'dshcw-capture-ocr.exe');
     if (existsSync(exe) !== true) return false;
@@ -181,6 +189,221 @@ const SOURCES = {
   audio: 'AudioEngine.cs',
   watch: 'WindowWatch.cs',
 };
+
+/**
+ * ## 无签名 EXE 与智能应用控制（SAC）
+ *
+ * 三个引擎都是**本机当场编译**的 .NET EXE，没有代码签名。Win11 的 Smart App Control
+ * 只放行"微软判定安全"或"由受信任根证书签过名"的二进制 —— 它不看文件来源、不看路径、
+ * 不看 Mark-of-the-Web，于是这些 EXE 在开了 SAC 的机器上会被直接拦掉
+ * （Windows 安全中心报"此应用的一部分已被阻止…因为我们无法确认谁发布了它"）。
+ *
+ * 所以流程改成**先看 SAC**：
+ *   - SAC 没开 → 照旧本机编译（约 0.4 秒，不联网）；
+ *   - SAC 开着 → 去 GitHub Release 拉**预编译产物**（CI 编、CI 签，清单里的 sha256 对得上才用）；
+ *   - 拉不到 → 退回本机编译，并把 OCR / ASR / 窗口监测 三处小字一起改成
+ *     "联网拉取…编译产物失败，本机有SAC无法使用，如果信任本程序，可临时关闭SAC。[SAC设置]"。
+ *
+ * 检测走 `reg.exe query`（微软签名的系统程序，SAC 不拦它），读
+ * `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState`：
+ * `0` = 关 / `1` = 强制 / `2` = 评估（只记录、不拦）/ 值不存在 = 这台机器从没开过 SAC。
+ */
+const SAC_KEY = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy';
+
+/** SAC 开关在「Windows 安全中心 → 应用和浏览器控制 → 智能应用控制」。 */
+export const SAC_SETTINGS_URI = 'windowsdefender://appbrowser';
+
+/** 预编译产物所在的仓库（`releases/latest/download/<文件名>` 是稳定直链）。 */
+export const RELEASE_REPO = 'nodcharlotte/dsh-chat-widget';
+
+/** Release 里的清单（每个产物的 sha256）。 */
+export const RELEASE_MANIFEST = 'native-manifest.json';
+
+/** 记着"目录里这个 exe 是 Release 拉的、哈希是多少"（本机编译的不在册）。 */
+const PREBUILT_MARKER = 'prebuilt.json';
+
+/** Release 可能带的四个产物（清单里没列的就跳过）。 */
+const RELEASE_FILES = ['dshcw-capture.exe', 'dshcw-capture-ocr.exe', 'dshcw-audio.exe', 'dshcw-watch.exe'];
+
+/** SAC 状态缓存（一次 `/screen/status` 里会被问好几遍，别每次都起 reg.exe）。 */
+let sacCached = { at: 0, value: null };
+
+/**
+ * 本机 SAC 状态。
+ *
+ * @param {boolean} [refresh] - 忽略缓存重新读一次。
+ * @returns {{state: 'on'|'eval'|'off'|'unknown', code: number|null, uri: string}} 状态。
+ */
+export function sacState(refresh = false) {
+  if (refresh !== true && sacCached.value !== null && Date.now() - sacCached.at < 10_000) return sacCached.value;
+  const done = (value) => {
+    sacCached = { at: Date.now(), value };
+    return value;
+  };
+  const off = { state: 'off', code: null, uri: SAC_SETTINGS_URI };
+  if (process.platform !== 'win32') return done(off);
+  const reg = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe');
+  if (existsSync(reg) !== true) return done({ ...off, state: 'unknown' });
+  let text = '';
+  try {
+    const out = spawnSync(reg, ['query', SAC_KEY, '/v', 'VerifiedAndReputablePolicyState'], {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 8000,
+    });
+    if (out.error !== undefined && out.error !== null) return done({ ...off, state: 'unknown' });
+    text = `${String(out.stdout ?? '')}\n${String(out.stderr ?? '')}`;
+  } catch {
+    return done({ ...off, state: 'unknown' });
+  }
+  const hit = /VerifiedAndReputablePolicyState\s+REG_DWORD\s+0x([0-9a-fA-F]+)/.exec(text);
+  // 键或值不存在 = 这台机器从来没过 SAC（开过一次就会留下这个值），当成关
+  if (hit === null) return done(off);
+  const code = Number.parseInt(hit[1], 16);
+  if (code === 1) return done({ state: 'on', code, uri: SAC_SETTINGS_URI });
+  if (code === 2) return done({ state: 'eval', code, uri: SAC_SETTINGS_URI });
+  return done({ state: 'off', code, uri: SAC_SETTINGS_URI });
+}
+
+/** 本机这次会话拉预编译产物的结果（`ok` null = 还没试过）。 */
+const prebuiltAttempt = { inFlight: false, done: false, ok: null, error: '', version: '' };
+
+/**
+ * 读预编译标记（坏文件当没有）。
+ *
+ * @returns {{version?: string, files: Record<string, string>}} 标记内容。
+ */
+function prebuiltMarker() {
+  try {
+    const parsed = JSON.parse(readFileSync(join(nativeDir(), PREBUILT_MARKER), 'utf8'));
+    if (parsed === null || typeof parsed !== 'object') return { files: {} };
+    if (parsed.files === null || typeof parsed.files !== 'object') return { files: {} };
+    return parsed;
+  } catch {
+    return { files: {} };
+  }
+}
+
+/**
+ * 这个产物是不是 Release 那份（标记里有它，且文件的 sha256 仍对得上）。
+ *
+ * @param {string} exeName - 产物文件名。
+ * @returns {boolean} 可以直接用。
+ */
+export function prebuiltEngine(exeName) {
+  const files = prebuiltMarker().files;
+  const want = files !== null && typeof files === 'object' ? files[exeName] : undefined;
+  if (typeof want !== 'string' || want === '') return false;
+  try {
+    const exe = join(nativeDir(), exeName);
+    if (existsSync(exe) !== true) return false;
+    return createHash('sha256').update(readFileSync(exe)).digest('hex') === want;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 从 GitHub Release 把预编译产物拉下来，写到数据目录（先 `.tmp` 再改名）。
+ *
+ * 清单里的 sha256 对不上就不落盘 —— 宁可用本机编的，也不装一个来源不明的二进制。
+ *
+ * @param {object} [logger] - 日志器。
+ * @returns {Promise<{ok: boolean, files?: Record<string, string>, version?: string, error?: string}>} 结果。
+ */
+export async function fetchPrebuilt(logger) {
+  const dir = nativeDir();
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (error) {
+    return { ok: false, error: `建目录失败：${String(error)}` };
+  }
+  const timeout = (ms) => (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(ms)
+    : undefined);
+  const url = (name) => `https://github.com/${RELEASE_REPO}/releases/latest/download/${encodeURIComponent(name)}`;
+
+  let manifest = null;
+  try {
+    const response = await fetch(url(RELEASE_MANIFEST), { redirect: 'follow', signal: timeout(30_000) });
+    if (response.ok !== true) return { ok: false, error: `HTTP ${response.status}（${RELEASE_MANIFEST}）` };
+    manifest = JSON.parse(await response.text());
+  } catch (error) {
+    return { ok: false, error: `清单拉取失败：${String(error)}` };
+  }
+  const listed = manifest !== null && typeof manifest === 'object' ? manifest.files : null;
+  if (listed === null || typeof listed !== 'object') return { ok: false, error: '清单里没有 files' };
+
+  const written = {};
+  for (const name of RELEASE_FILES) {
+    const want = typeof listed[name] === 'string' ? listed[name].toLowerCase() : '';
+    if (want === '') continue;
+    if (prebuiltEngine(name) === true) {
+      written[name] = want;
+      continue;
+    }
+    try {
+      const response = await fetch(url(name), { redirect: 'follow', signal: timeout(60_000) });
+      if (response.ok !== true) return { ok: false, error: `HTTP ${response.status}（${name}）` };
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const sha = createHash('sha256').update(buffer).digest('hex');
+      if (sha !== want) {
+        return { ok: false, error: `${name} 哈希对不上（清单 ${want.slice(0, 12)}…，实际 ${sha.slice(0, 12)}…）` };
+      }
+      const exe = join(dir, name);
+      writeFileSync(`${exe}.tmp`, buffer);
+      renameSync(`${exe}.tmp`, exe);
+      written[name] = sha;
+    } catch (error) {
+      return { ok: false, error: `${name} 下载失败：${String(error)}` };
+    }
+  }
+  if (Object.keys(written).length === 0) return { ok: false, error: '清单里没有可用的产物' };
+
+  const version = typeof manifest.version === 'string' ? manifest.version : '';
+  try {
+    writeFileSync(
+      join(dir, PREBUILT_MARKER),
+      JSON.stringify({ version, at: Date.now(), files: written }, null, 2),
+      'utf8',
+    );
+  } catch (error) {
+    return { ok: false, error: `写标记失败：${String(error)}` };
+  }
+  logger?.info?.(`chat-widget: 预编译引擎就位（${String(Object.keys(written).length)} 个${version === '' ? '' : `，${version}`}）`);
+  return { ok: true, files: written, version };
+}
+
+/**
+ * 拉一次预编译产物 —— **后台跑，不弹窗**（产物只有几十 KB，失败会自动退回本机编译）。
+ *
+ * 只在 SAC 开着时才试；同一个会话只试一次。结果是异步写的，
+ * 界面下次读 `/screen/status` 就能看到 `native.sac.blocked`。
+ *
+ * @param {object} [logger] - 日志器。
+ * @returns {void} 不等待。
+ */
+export function prefetchPrebuilt(logger) {
+  if (prebuiltAttempt.inFlight === true || prebuiltAttempt.done === true) return;
+  // SAC 没开就不必拉：本机编译的产物本来就能跑
+  if (sacState().state !== 'on') return;
+  prebuiltAttempt.inFlight = true;
+  fetchPrebuilt(logger)
+    .then((got) => {
+      prebuiltAttempt.done = true;
+      prebuiltAttempt.inFlight = false;
+      prebuiltAttempt.ok = got.ok === true;
+      prebuiltAttempt.error = got.ok === true ? '' : String(got.error ?? '');
+      prebuiltAttempt.version = got.ok === true ? String(got.version ?? '') : '';
+      if (got.ok !== true) logger?.warn?.(`chat-widget: 拉取预编译引擎失败（将退回本机编译）：${prebuiltAttempt.error}`);
+    })
+    .catch((error) => {
+      prebuiltAttempt.done = true;
+      prebuiltAttempt.inFlight = false;
+      prebuiltAttempt.ok = false;
+      prebuiltAttempt.error = String(error);
+    });
+}
 
 /**
  * 找 csc.exe（.NET Framework 自带的 C# 编译器，Win10/11 一定有）。
@@ -338,7 +561,7 @@ export function compileEngine({ target, withOcr = false, logger }) {
 export function ensureEngine({ target, wantOcr = false, logger }) {
   const outDir = nativeDir();
   const plain = join(outDir, OUTPUTS[target]);
-  const plainFresh = isFresh(target, plain);
+  const plainFresh = usableEngine(target, OUTPUTS[target], plain);
 
   if (target === 'audio' || target === 'watch') {
     if (plainFresh === true) return { ok: true, exe: plain, ocr: 'off' };
@@ -347,7 +570,7 @@ export function ensureEngine({ target, wantOcr = false, logger }) {
   }
 
   const withOcrExe = join(outDir, 'dshcw-capture-ocr.exe');
-  const ocrFresh = isFresh(target, withOcrExe);
+  const ocrFresh = usableEngine(target, 'dshcw-capture-ocr.exe', withOcrExe);
 
   // 要 OCR：优先用现成的带 OCR 产物；没有就试着编
   if (wantOcr === true) {
@@ -366,6 +589,22 @@ export function ensureEngine({ target, wantOcr = false, logger }) {
   if (plainFresh === true) return { ok: true, exe: plain, ocr: 'off' };
   const built = compileEngine({ target, logger });
   return { ok: built.ok === true, exe: built.exe, ocr: 'off', error: built.error };
+}
+
+/**
+ * 产物能不能直接用。
+ *
+ * Release 拉下来的那份（哈希对得上）**优先**：它是签过名的，SAC 开着也跑得起来；
+ * 没有才看本机编译的那份（mtime 比源码新）。
+ *
+ * @param {'capture'|'audio'|'watch'} target - 引擎。
+ * @param {string} exeName - 产物文件名。
+ * @param {string} exe - 产物路径。
+ * @returns {boolean} 可直接用。
+ */
+function usableEngine(target, exeName, exe) {
+  if (prebuiltEngine(exeName) === true) return true;
+  return isFresh(target, exe);
 }
 
 /**
@@ -393,6 +632,7 @@ function isFresh(target, exe) {
  */
 export function nativeStatus() {
   const refs = winmdRefs();
+  const sac = sacState();
   return {
     csc: cscPath() !== '',
     // `sdk` 保留旧名字（界面已经在用）：含义是"能编 OCR 引擎的契约有没有"
@@ -403,5 +643,15 @@ export function nativeStatus() {
     engine: ocrEngineReady(),
     sdkDownload: SDK_DOWNLOAD_URL,
     dir: nativeDir(),
+    // 智能应用控制：开着的时候界面要把"拉不到预编译产物"的红字提示显示出来
+    sac: {
+      state: sac.state,
+      uri: SAC_SETTINGS_URI,
+      // null = 还没试过 / true = 拉到了 / false = 试过、失败
+      fetched: prebuiltAttempt.done === true ? prebuiltAttempt.ok === true : null,
+      error: prebuiltAttempt.error,
+      // true = OCR / ASR / 窗口监测 三处小字一起改成"关掉 SAC"的提示
+      blocked: sac.state === 'on' && prebuiltAttempt.done === true && prebuiltAttempt.ok !== true,
+    },
   };
 }

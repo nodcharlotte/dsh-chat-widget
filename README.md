@@ -59,6 +59,20 @@ dsh plugin --profile web add "<本目录的绝对路径>"
 - .NET Framework 的 `csc.exe`（系统自带）；想要字幕 OCR 还需要 **Windows SDK** 的 `Windows.winmd`，缺了会自动退化成「无 OCR 的截图引擎」
 - Node 侧依赖 `sherpa-onnx-node`（ASR 与本地 TTS），需在 DSH 安装目录中可解析
 
+## 原生引擎与 Smart App Control
+
+截图 / OCR / 音频 / 窗口监测用的是四个 C# 小引擎，源码在 [`native/`](native/)，
+运行时编成 EXE（早期是运行时生成的 `.ps1`，会被 Defender 的 AMSI 判成恶意脚本）。
+
+- **Smart App Control 没开**（默认状态）→ 第一次用到时用系统自带的 `csc.exe` 当场编译，约 0.4 秒，不联网
+- **开着** → 它只放行签过名的程序，本机编的 EXE 会被拦掉。这时插件从本仓库的
+  GitHub Release 下载**已签名**的预编译产物，逐个核对 `native-manifest.json` 里的 sha256；
+  下载失败就退回本机编译，并在设置里 OCR / ASR / 窗口监测 三处说明原因，
+  给一个跳到「Windows 安全中心 → 应用和浏览器控制」的入口
+
+四个引擎都不联网、不写注册表、不提权，只做截图、OCR、录扬声器音轨、盯前台窗口这四件事。
+构建与签名流程（由 [SignPath Foundation](https://signpath.org/) 提供签名）见 [docs/NATIVE.md](docs/NATIVE.md)。
+
 ## 桌宠
 
 仓库里**自带一个角色：朝那玲**（`pet/assets/live2d/朝那玲/`），渲染库 `pixi.js` 与
@@ -87,6 +101,7 @@ dsh plugin --profile web add "<本目录的绝对路径>"
 - 仅 Windows
 - 没有 Windows SDK 时 OCR 不可用（截图和视觉理解仍可用）
 - OCR / ASR 的识别结果只作参考，不保证准确
+- Smart App Control 开着、又没下到签名产物时，四个引擎都跑不起来（设置里会说明原因并给出入口）
 
 ## 许可
 

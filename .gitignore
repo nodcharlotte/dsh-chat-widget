@@ -15,6 +15,10 @@ pet/pet-state.json
 # 依赖
 node_modules/
 
+# CI 的工作目录（DSH_HOME）与发布产物暂存区
+.native/
+dist/
+
 # 系统 / 编辑器
 Thumbs.db
 desktop.ini

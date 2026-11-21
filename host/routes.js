@@ -48,9 +48,9 @@ import {
 import { fetchProviderModels } from './upstream.js';
 import { retrieveMemories } from './memory.js';
 import { ocrLanguages } from './screen-capture.js';
-import { ensureEngine, fetchWinmds, nativeStatus } from './native-build.js';
+import { ensureEngine, fetchWinmds, nativeStatus, prefetchPrebuilt, SAC_SETTINGS_URI } from './native-build.js';
 import { OCR_LANG_CHOICES, KEYWORD_EMBED_PROVIDER, isKeywordEmbedding } from './settings.js';
-import { listModels, petRoots, readStatic, resolveModel } from './pet.js';
+import { coreStatus, downloadCore, listModels, petRoots, readStatic, resolveModel } from './pet.js';
 
 /** 路由前缀。 */
 export const API_PREFIX = '/chat-widget/api';
@@ -402,6 +402,8 @@ function speechServiceInfo(getSpeechToText) {
  * @returns {Promise<void>} 完成。
  */
 async function postOcrEngine({ res, logger }) {
+  // 点了滑块就是要用引擎：SAC 开着先试着拉签过名的预编译产物（拉不到下面照样本机编）
+  prefetchPrebuilt(logger);
   const built = ensureEngine({ target: 'capture', wantOcr: true, logger });
   // `ensureEngine` 没 SDK 时会**退成无 OCR 版**并返回 `ok:true, ocr:'missing-sdk'`，
   // 所以必须把 `ocr !== 'ok'` 也算失败，否则界面会把"没 OCR 的引擎"当成编译成功。
@@ -429,6 +431,30 @@ async function postOcrWinmd({ res, logger }) {
   sendJson(res, 200, built.ok === true && built.ocr === 'ok'
     ? { ok: true, count: fetched.count, exe: built.exe }
     : { ok: false, stage: 'compile', ocr: built.ocr, error: String(built.error ?? '') });
+}
+
+/**
+ * POST /screen/sac-guide —— 打开「Windows 安全中心 → 应用和浏览器控制 → 智能应用控制」。
+ *
+ * 预编译产物拉不到、本机编译的 EXE 又被 SAC 拦掉时，界面那行红字里的【SAC设置】走这里。
+ * 同一套 `cmd start <URI>` 的老办法（`postOcrGuide` 用的也是它）。
+ *
+ * @param {object} ctx - `{res, logger}`。
+ * @returns {Promise<void>} 完成。
+ */
+async function postSacGuide({ res, logger }) {
+  try {
+    const { spawn } = await import('node:child_process');
+    spawn('cmd.exe', ['/c', 'start', '', SAC_SETTINGS_URI], {
+      windowsHide: true,
+      detached: true,
+      stdio: 'ignore',
+    }).unref();
+    sendJson(res, 200, { ok: true, opened: SAC_SETTINGS_URI });
+  } catch (error) {
+    logger?.warn?.(`chat-widget: 打开智能应用控制设置失败：${String(error)}`);
+    sendJson(res, 200, { ok: false, error: String(error) });
+  }
 }
 
 /**
@@ -464,6 +490,9 @@ async function postOcrGuide({ res, logger }) {
  */
 async function getScreenStatus({ res, logger, companion, getSpeechToText }) {
   const { settings } = await readSettings(logger);
+  // 智能应用控制开着的话：顺手在后台拉一次 Release 里的预编译产物（不弹窗、不阻塞返回）。
+  // 拉不到的话下次读状态 `native.sac.blocked` 就是 true，界面把三处小字一起换成"关掉 SAC"的提示。
+  prefetchPrebuilt(logger);
   const stats = screenStats(settings.store.dir);
   // 本机装了哪些 OCR 语言（引擎跑着时是缓存；没跑就扫一次，约 0.6 秒）——界面判断"无此语言包"要用
   const languages = ocrLanguages(logger);
@@ -752,12 +781,38 @@ async function getPetStatus({ res, pet }) {
   // 模型清单跟着现场一起给：设置面板第一行的方框直接用它渲染，
   // 文件夹删了/加了下次读就变，不用另开一个端点。
   const models = listModels();
+  // Core 在不在也一起给：界面要在「开启桌宠」那一下决定拦不拦（缺了就提示 + 下载）
+  const core = coreStatus();
   sendJson(res, 200, {
     ok: true,
     pet: pet === undefined || pet === null || typeof pet.status !== 'function'
-      ? { enabled: false, models }
-      : { ...pet.status(), models },
+      ? { enabled: false, models, core }
+      : { ...pet.status(), models, core },
   });
+}
+
+/**
+ * GET /pet/core —— Live2D Cubism Core 在不在（界面据此决定要不要拦下开关）。
+ *
+ * 这个文件**不进仓库**（Live2D 专有软件，不能在公开仓库里按项目许可证再分发），
+ * 缺了就由用户在界面上点【下载】，从官方托管的地址取到本机。
+ *
+ * @param {object} ctx - `{res}`。
+ * @returns {void} 无。
+ */
+function getPetCore({ res }) {
+  sendJson(res, 200, { ok: true, ...coreStatus() });
+}
+
+/**
+ * POST /pet/core —— 从 Live2D 官方下载 Core 并写到 vendor/（约 200 KB）。
+ *
+ * @param {object} ctx - `{res, logger}`。
+ * @returns {Promise<void>} 完成。
+ */
+async function postPetCore({ res, logger }) {
+  const result = await downloadCore(logger);
+  sendJson(res, result.ok === true ? 200 : 500, result);
 }
 
 /**
@@ -1155,9 +1210,12 @@ const ROUTES = new Map([
   ['POST /screen/ocr-engine', postOcrEngine],
   ['POST /screen/ocr-winmd', postOcrWinmd],
   ['POST /screen/ocr-guide', postOcrGuide],
+  ['POST /screen/sac-guide', postSacGuide],
   ['POST /screen/compress', postScreenCompress],
   ['POST /screen/speech', postScreenSpeech],
   ['GET /pet/status', getPetStatus],
+  ['GET /pet/core', getPetCore],
+  ['POST /pet/core', postPetCore],
   ['GET /pet/config', getPetConfig],
   ['GET /pet/voices', getPetVoices],
   ['POST /pet/preview', postPetPreview],

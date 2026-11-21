@@ -28,7 +28,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -352,6 +353,84 @@ export function readStatic(root, urlPath) {
 /** 页面根与资源根（给路由用）。 */
 export function petRoots() {
   return { pageRoot: PAGE_ROOT, assetRoot: ASSET_ROOT };
+}
+
+/**
+ * Live2D Cubism Core 的落地位置（页面用 `assets/vendor/live2dcubismcore.min.js` 引它）。
+ *
+ * **这个文件不进仓库**：它是 Live2D 的专有软件（Proprietary Software License），
+ * 只允许作为成品的一部分分发给最终用户，不能在公开仓库里以项目许可证再分发。
+ * 所以缺了就由用户在界面点【下载】，从 Live2D 官方取到他自己机器上。
+ */
+const CORE_PATH = join(ASSET_ROOT, 'vendor', 'live2dcubismcore.min.js');
+
+/**
+ * 官方托管的 Cubism Core（Live2D 下载页「Cubism Core for Web / ホスティング用途」给的那个地址）。
+ *
+ * 注意：只有 "Latest" 这一个地址，带版本号的路径是 404，所以下载后必须**校验内容**。
+ */
+export const CORE_DOWNLOAD_URL = 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js';
+
+/** 许可原文（界面上提醒"点下载表示同意"时挂链接用）。 */
+export const CORE_LICENSE_URL = 'https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html';
+
+/**
+ * Core 现在在不在（界面据此决定要不要拦下"开启桌宠"）。
+ *
+ * @returns {{present: boolean, bytes: number, path: string, url: string, license: string}} 状态。
+ */
+export function coreStatus() {
+  let bytes = 0;
+  try {
+    bytes = statSync(CORE_PATH).size;
+  } catch {
+    bytes = 0;
+  }
+  return {
+    present: bytes > 0,
+    bytes,
+    path: CORE_PATH,
+    url: CORE_DOWNLOAD_URL,
+    license: CORE_LICENSE_URL,
+  };
+}
+
+/** 下载到的内容是不是真的 Cubism Core（只有 Latest 地址，靠内容兜住版本漂移）。 */
+function looksLikeCore(buffer) {
+  if (buffer.length < 100_000) return false;
+  const head = buffer.toString('utf8', 0, Math.min(buffer.length, 400_000));
+  // 官方那份里一定有这些符号；少了任何一个就当没下对
+  return head.includes('csmGetVersion') && head.includes('MocVersion_30');
+}
+
+/**
+ * 从 Live2D 官方把 Core 取下来，写到 vendor/（先写 .tmp 再改名，避免半截文件）。
+ *
+ * @param {object} [logger] - 日志器。
+ * @returns {Promise<{ok: boolean, bytes?: number, sha256?: string, error?: string, path: string}>} 结果。
+ */
+export async function downloadCore(logger) {
+  const timeout = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(45_000)
+    : undefined;
+  try {
+    const response = await fetch(CORE_DOWNLOAD_URL, { redirect: 'follow', signal: timeout });
+    if (response.ok !== true) return { ok: false, error: `HTTP ${response.status}`, path: CORE_PATH };
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (looksLikeCore(buffer) !== true) {
+      return { ok: false, error: `下载到的不是 Cubism Core（${buffer.length} 字节，内容校验没过）`, path: CORE_PATH };
+    }
+    mkdirSync(dirname(CORE_PATH), { recursive: true });
+    const temp = `${CORE_PATH}.tmp`;
+    writeFileSync(temp, buffer);
+    renameSync(temp, CORE_PATH);
+    const sha256 = createHash('sha256').update(buffer).digest('hex');
+    logger?.info?.(`chat-widget: Live2D Core 已就位（${buffer.length} 字节，sha256 ${sha256.slice(0, 12)}…）`);
+    return { ok: true, bytes: buffer.length, sha256, path: CORE_PATH };
+  } catch (error) {
+    logger?.warn?.(`chat-widget: 下载 Live2D Core 失败：${String(error)}`);
+    return { ok: false, error: String(error), path: CORE_PATH };
+  }
 }
 
 /**
