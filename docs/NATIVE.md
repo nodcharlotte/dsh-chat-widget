@@ -81,7 +81,7 @@ native-manifest.json
 没有第二套编译参数，也就不会两边编出不一样的东西。
 
 签名由 [SignPath Foundation](https://signpath.org/) 提供（开源项目免费），
-发布者显示为 `SignPath Foundation`。
+发布者显示为 `SignPath Foundation`。申请、配置与验收步骤见 [SIGNING.md](SIGNING.md)。
 
 ## 自己编译（验证用）
 
