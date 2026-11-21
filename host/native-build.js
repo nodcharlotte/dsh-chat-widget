@@ -26,6 +26,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { get as httpsGet } from 'node:https';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -304,6 +305,76 @@ export function prebuiltEngine(exeName) {
 }
 
 /**
+ * 取一个小文件（GET，最多跟 5 次跳转）。
+ *
+ * **故意不用全局 `fetch`**：实测在装了杀毒/防火墙的 Windows 上，Node 的 undici 连
+ * `github.com` 会一直 `UND_ERR_CONNECT_TIMEOUT`（10 秒超时），同一个地址换成
+ * `node:https` + `family: 4` 600 ms 就回 302。下载这条路不能赌 undici 的地址选择，
+ * 所以直接走 `https` 并**强制 IPv4**（GitHub 的 IPv4 够用）。
+ *
+ * @param {string} url - 绝对地址（https）。
+ * @param {number} timeoutMs - 单次请求超时。
+ * @returns {Promise<{ok: boolean, buffer?: Buffer, status?: number, error?: string}|{redirect: string}>} 结果。
+ */
+async function httpGet(url, timeoutMs) {
+  const MAX_REDIRECTS = 5;
+  const MAX_BYTES = 8 * 1024 * 1024;
+  let target = url;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    const got = await new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled === true) return;
+        settled = true;
+        resolve(value);
+      };
+      let request = null;
+      try {
+        request = httpsGet(target, {
+          family: 4,
+          headers: { 'accept-encoding': 'identity', 'user-agent': 'dsh-chat-widget' },
+        }, (response) => {
+          const status = response.statusCode ?? 0;
+          const location = response.headers.location;
+          if (status >= 300 && status < 400 && typeof location === 'string') {
+            response.resume();
+            finish({ redirect: new URL(location, target).toString() });
+            return;
+          }
+          if (status !== 200) {
+            response.resume();
+            finish({ ok: false, error: `HTTP ${status}` });
+            return;
+          }
+          const chunks = [];
+          let bytes = 0;
+          response.on('data', (chunk) => {
+            bytes += chunk.length;
+            if (bytes > MAX_BYTES) {
+              request.destroy(new Error(`文件超过 ${Math.round(MAX_BYTES / 1024 / 1024)} MB`));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          response.on('end', () => finish({ ok: true, buffer: Buffer.concat(chunks), status }));
+          response.on('error', (error) => finish({ ok: false, error: String(error?.message ?? error) }));
+        });
+        request.on('error', (error) => finish({ ok: false, error: String(error?.code ?? error?.message ?? error) }));
+        request.setTimeout(timeoutMs, () => request.destroy(new Error('超时')));
+      } catch (error) {
+        finish({ ok: false, error: String(error) });
+      }
+    });
+    if (got !== null && typeof got === 'object' && typeof got.redirect === 'string') {
+      target = got.redirect;
+      continue;
+    }
+    return got;
+  }
+  return { ok: false, error: `跳转超过 ${MAX_REDIRECTS} 次` };
+}
+
+/**
  * 从 GitHub Release 把预编译产物拉下来，写到数据目录（先 `.tmp` 再改名）。
  *
  * 清单里的 sha256 对不上就不落盘 —— 宁可用本机编的，也不装一个来源不明的二进制。
@@ -319,18 +390,15 @@ export async function fetchPrebuilt(logger) {
   } catch (error) {
     return { ok: false, error: `建目录失败：${String(error)}` };
   }
-  const timeout = (ms) => (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-    ? AbortSignal.timeout(ms)
-    : undefined);
   const url = (name) => `https://github.com/${RELEASE_REPO}/releases/latest/download/${encodeURIComponent(name)}`;
 
   let manifest = null;
+  const manifestGot = await httpGet(url(RELEASE_MANIFEST), 30_000);
+  if (manifestGot.ok !== true) return { ok: false, error: `清单拉取失败：${manifestGot.error}（${RELEASE_MANIFEST}）` };
   try {
-    const response = await fetch(url(RELEASE_MANIFEST), { redirect: 'follow', signal: timeout(30_000) });
-    if (response.ok !== true) return { ok: false, error: `HTTP ${response.status}（${RELEASE_MANIFEST}）` };
-    manifest = JSON.parse(await response.text());
+    manifest = JSON.parse(manifestGot.buffer.toString('utf8'));
   } catch (error) {
-    return { ok: false, error: `清单拉取失败：${String(error)}` };
+    return { ok: false, error: `清单不是 JSON：${String(error)}` };
   }
   const listed = manifest !== null && typeof manifest === 'object' ? manifest.files : null;
   if (listed === null || typeof listed !== 'object') return { ok: false, error: '清单里没有 files' };
@@ -350,9 +418,9 @@ export async function fetchPrebuilt(logger) {
       continue;
     }
     try {
-      const response = await fetch(url(name), { redirect: 'follow', signal: timeout(60_000) });
-      if (response.ok !== true) return { ok: false, error: `HTTP ${response.status}（${name}）` };
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const got = await httpGet(url(name), 60_000);
+      if (got.ok !== true) return { ok: false, error: `${name} 下载失败：${got.error}` };
+      const buffer = got.buffer;
       const sha = createHash('sha256').update(buffer).digest('hex');
       if (sha !== want) {
         return { ok: false, error: `${name} 哈希对不上（清单 ${want.slice(0, 12)}…，实际 ${sha.slice(0, 12)}…）` };
