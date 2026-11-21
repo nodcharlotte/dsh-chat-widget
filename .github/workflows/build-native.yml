@@ -111,11 +111,16 @@ jobs:
             gh release upload $tag @assets --clobber
           } else {
             $notes = @'
-          原生引擎产物（`dshcw-capture.exe` / `dshcw-capture-ocr.exe` / `dshcw-audio.exe` / `dshcw-watch.exe`），
-          附 `native-manifest.json` 校验清单（每个文件的 sha256）。
+          Native engine binaries (`dshcw-capture.exe` / `dshcw-capture-ocr.exe` /
+          `dshcw-audio.exe` / `dshcw-watch.exe`) plus `native-manifest.json`, which lists
+          the SHA-256 of every file.
 
-          插件在 Smart App Control 开着的机器上会自动下载这几个文件并核对哈希。
-          源码与构建方式见 docs/NATIVE.md。
+          This project uses the **SignPath Foundation** for code signing of its native
+          binaries. Builds published before the onboarding completes are unsigned — check
+          the `signed` field in `native-manifest.json` before relying on them.
+
+          The plugin downloads and hash-checks these files on machines where Smart App
+          Control is enabled. Sources and build steps: `docs/NATIVE.md`.
           '@
             gh release create $tag @assets --title $tag --notes $notes --verify-tag
           }

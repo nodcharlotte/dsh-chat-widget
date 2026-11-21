@@ -73,6 +73,10 @@ dsh plugin --profile web add "<本目录的绝对路径>"
 四个引擎都不联网、不写注册表、不提权，只做截图、OCR、录扬声器音轨、盯前台窗口这四件事。
 构建与签名流程（由 [SignPath Foundation](https://signpath.org/) 提供签名）见 [docs/NATIVE.md](docs/NATIVE.md)。
 
+> This project uses the [SignPath Foundation](https://signpath.org/) for code signing of its
+> native binaries. Builds published before the onboarding completes are unsigned; check the
+> `signed` field in `native-manifest.json`.
+
 ## 桌宠
 
 仓库里**自带一个角色：朝那玲**（`pet/assets/live2d/朝那玲/`），渲染库 `pixi.js` 与
@@ -95,6 +99,7 @@ dsh plugin --profile web add "<本目录的绝对路径>"
 - 开启「屏幕陪看」后，截图会发给你配置的**视觉模型端点**；用本地 Ollama 就不出网
 - 默认 TTS 引擎是 `edge`，会把要朗读的文字发到微软的在线朗读服务；不想出网就换 `kokoro` / `melo`
 - 对话和记忆都存在本机 `~/.dsh/chat-widget/`
+- 完整的英文隐私政策：[docs/PRIVACY.md](docs/PRIVACY.md)
 
 ## 已知限制
 
